@@ -1116,7 +1116,6 @@ Parser::WalkTemplateArgument(const clang::TemplateArgument& TA, clang::TemplateA
         break;
     case clang::TemplateArgument::Integral:
         Arg.Kind = CppSharp::CppParser::TemplateArgument::ArgumentKind::Integral;
-        //Arg.Type = WalkType(TA.getIntegralType(), 0);
         Arg.Integral = TA.getAsIntegral().getLimitedValue();
         break;
     case clang::TemplateArgument::Template:
@@ -1614,7 +1613,7 @@ static ParserIntType ConvertIntType(clang::TargetInfo::IntType IT)
 }
 
 Type* Parser::WalkType(clang::QualType QualType, clang::TypeLoc* TL,
-    bool DesugarType)
+    bool DesugarType, bool CompleteType)
 {
     using namespace clang;
 
@@ -1623,9 +1622,10 @@ Type* Parser::WalkType(clang::QualType QualType, clang::TypeLoc* TL,
 
     // we cannot get a location in some cases of template arguments
     const RecordType* RT;
-    if (!(RT = QualType->getAs<RecordType>()) ||
+    if (CompleteType &&(
+        !(RT = QualType->getAs<RecordType>()) ||
         !dyn_cast<ClassTemplateSpecializationDecl>(RT->getDecl()) ||
-        (TL && !TL->isNull()))
+        (TL && !TL->isNull())))
     {
         C->getSema().RequireCompleteType(
             TL && !TL->isNull() ? TL->getLocStart() : clang::SourceLocation(), QualType, 1);
@@ -1950,7 +1950,9 @@ Type* Parser::WalkType(clang::QualType QualType, clang::TypeLoc* TL,
         TST->Template = static_cast<Template*>(WalkDeclaration(
             Name.getAsTemplateDecl(), 0, /*IgnoreSystemDecls=*/false));
         if (TS->isSugared())
-            TST->Desugared = WalkType(TS->desugar(), TL);
+            // HACK: work around an assert with QtCore (https://github.com/mono/CppSharp/issues/647)
+            TST->Desugared = WalkType(TS->desugar(), TL,
+                /*DesugarType=*/false, /*CompleteType=*/false);
 
         TypeLoc UTL, ETL, ITL;
 
@@ -2074,7 +2076,9 @@ Type* Parser::WalkType(clang::QualType QualType, clang::TypeLoc* TL,
         if (TL && !TL->isNull()) Next = TL->getNextTypeLoc();
 
         auto Pointee = LR->getPointeeType();
-        P->QualifiedPointee = GetQualifiedType(Pointee, WalkType(Pointee, &Next));
+        // HACK: work around an assert with QtCore (https://github.com/mono/CppSharp/issues/647)
+        P->QualifiedPointee = GetQualifiedType(Pointee, WalkType(Pointee, &Next,
+            /*DesugarType=*/false, /*CompleteType=*/false));
 
         Ty = P;
         break;
@@ -2229,8 +2233,7 @@ static const clang::CodeGen::CGFunctionInfo& GetCodeGenFuntionInfo(
     return CodeGenTypes->arrangeFunctionDeclaration(FD);
 }
 
-static bool CanCheckCodeGenInfo(clang::Sema& S,
-                                const clang::Type* Ty, bool IsMicrosoftABI)
+static bool CanCheckCodeGenInfo(clang::Sema& S, const clang::Type* Ty)
 {
     bool CheckCodeGenInfo = true;
 
@@ -2239,15 +2242,6 @@ static bool CanCheckCodeGenInfo(clang::Sema& S,
 
     if (auto RD = Ty->getAsCXXRecordDecl())
         CheckCodeGenInfo &= RD->hasDefinition();
-
-    // Lock in the MS inheritance model if we have a member pointer to a class,
-    // else we get an assertion error inside Clang's codegen machinery.
-    if (IsMicrosoftABI)
-    {
-        if (auto MPT = Ty->getAs<clang::MemberPointerType>())
-            if (!MPT->isDependentType())
-                S.RequireCompleteType(clang::SourceLocation(), clang::QualType(Ty, 0), 1);
-    }
 
     return CheckCodeGenInfo;
 }
@@ -2332,10 +2326,8 @@ void Parser::WalkFunction(clang::FunctionDecl* FD, Function* F,
     if (GetDeclText(Range, Sig))
         F->Signature = Sig;
 
-    for(auto it = FD->param_begin(); it != FD->param_end(); ++it)
+    for (const auto& VD : FD->parameters())
     {
-        ParmVarDecl* VD = (*it);
-        
         auto P = new Parameter();
         P->Name = VD->getNameAsString();
 
@@ -2377,33 +2369,30 @@ void Parser::WalkFunction(clang::FunctionDecl* FD, Function* F,
 
     F->HasThisReturn = HasThisReturn;
 
-    bool IsMicrosoftABI = C->getASTContext().getTargetInfo().getCXXABI().isMicrosoft();
-    bool CheckCodeGenInfo = !FD->isDependentContext() && !FD->isInvalidDecl();
-    CheckCodeGenInfo &= CanCheckCodeGenInfo(C->getSema(), FD->getReturnType().getTypePtr(),
-        IsMicrosoftABI);
-    for (auto I = FD->param_begin(), E = FD->param_end(); I != E; ++I)
-        CheckCodeGenInfo &= CanCheckCodeGenInfo(C->getSema(), (*I)->getType().getTypePtr(),
-        IsMicrosoftABI);
-
-    if (CheckCodeGenInfo)
-    {
-        auto& CGInfo = GetCodeGenFuntionInfo(CodeGenTypes, FD);
-        F->IsReturnIndirect = CGInfo.getReturnInfo().isIndirect();
-
-        unsigned Index = 0;
-        for (auto I = CGInfo.arg_begin(), E = CGInfo.arg_end(); I != E; I++)
-        {
-            // Skip the first argument as it's the return type.
-            if (I == CGInfo.arg_begin())
-                continue;
-            if (Index >= F->Parameters.size())
-                continue;
-            F->Parameters[Index++]->IsIndirect = I->info.isIndirect();
-        }
-    }
-
     if (auto FTSI = FD->getTemplateSpecializationInfo())
         F->SpecializationInfo = WalkFunctionTemplateSpec(FTSI, F);
+
+    if (FD->isDependentContext() || FD->isInvalidDecl() ||
+        !CanCheckCodeGenInfo(C->getSema(), FD->getReturnType().getTypePtr()))
+        return;
+
+    for (const auto& P : FD->parameters())
+        if (!CanCheckCodeGenInfo(C->getSema(), P->getType().getTypePtr()))
+            return;
+
+    auto& CGInfo = GetCodeGenFuntionInfo(CodeGenTypes, FD);
+    F->IsReturnIndirect = CGInfo.getReturnInfo().isIndirect();
+
+    unsigned Index = 0;
+    for (auto I = CGInfo.arg_begin(), E = CGInfo.arg_end(); I != E; I++)
+    {
+        // Skip the first argument as it's the return type.
+        if (I == CGInfo.arg_begin())
+            continue;
+        if (Index >= F->Parameters.size())
+            continue;
+        F->Parameters[Index++]->IsIndirect = I->info.isIndirect();
+    }
 }
 
 Function* Parser::WalkFunction(clang::FunctionDecl* FD, bool IsDependent,

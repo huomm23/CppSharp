@@ -419,7 +419,7 @@ namespace CppSharp.Generators.CSharp
                 foreach (var specialization in classTemplate.Specializations)
                 {
                     if (FoundMatchingSpecialization(template.Arguments,
-                        specialization.Arguments, classTemplate.Parameters))
+                            specialization.Arguments, classTemplate.Parameters))
                     {
                         return GetNestedQualifiedName(specialization.TemplatedDecl) +
                             ".Internal" + Helpers.GetSuffixForInternal(
@@ -431,7 +431,7 @@ namespace CppSharp.Generators.CSharp
             foreach (var specialization in functionTemplate.Specializations)
             {
                 if (FoundMatchingSpecialization(template.Arguments,
-                    specialization.Arguments, functionTemplate.Parameters))
+                        specialization.Arguments, functionTemplate.Parameters))
                 {
                     return GetNestedQualifiedName(specialization.SpecializedFunction) +
                         ".Internal" + Helpers.GetSuffixForInternal(

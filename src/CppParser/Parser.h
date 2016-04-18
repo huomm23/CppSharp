@@ -87,7 +87,7 @@ protected:
     Friend* WalkFriend(clang::FriendDecl* FD);
     RawComment* WalkRawComment(const clang::RawComment* RC);
     Type* WalkType(clang::QualType QualType, clang::TypeLoc* TL = 0,
-      bool DesugarType = false);
+      bool DesugarType = false, bool CompleteType = true);
     TemplateArgument WalkTemplateArgument(const clang::TemplateArgument& TA, clang::TemplateArgumentLoc* ArgLoc);
     TypeTemplateParameter* WalkTypeTemplateParameter(clang::TemplateTypeParmDecl* TTPD);
     NonTypeTemplateParameter* WalkNonTypeTemplateParameter(clang::NonTypeTemplateParmDecl* TTPD);
