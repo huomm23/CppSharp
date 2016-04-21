@@ -41,3 +41,12 @@ script: |
   TEST_RESULT=0 &&
   for test in build/gmake/lib/Release_*/*.Tests.*.dll; do MONO_PATH=deps/NUnit.Runners.2.6.4/tools mono deps/NUnit.Runners.2.6.4/tools/nunit-console.exe -nologo $test || TEST_RESULT=$?; done &&
   exit "$TEST_RESULT"
+
+deploy:
+  provider: releases
+  api_key:
+    secure: 'tSYxyXeLtE0f6ZsXsGaHZEAw5Nj4TcgN/rx8uCfPnRjcE55OLAVn/8WXEiovNXLt'
+  file: 'CppSharp-"$TRAVIS_OS_NAME"-"TRAVIS_TAG".zip'
+  skip_cleanup: true
+  on:
+    tags: true
